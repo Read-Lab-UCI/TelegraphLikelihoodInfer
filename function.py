@@ -412,7 +412,7 @@ def optimize_likelihood(initial,distribution,cell_number=1,percentage=False,prob
 
 
 
-def parallel_likelihood(pexp,psim_path,cell_number=100,repeat=20,max_cell_number=50000,shape=[60,60,60],percentage=False,downsample=1.0,probability=False,optimize=True,alpha=0.05,name=False,save_path=False):
+def parallel_likelihood(pexp,psim_path,cell_number=1000,repeat=20,max_cell_number=50000,shape=[60,60,60],percentage=False,downsample=1.0,probability=False,optimize=True,alpha=0.05,name=False,save_path=False):
     start_time=time()
     try:
         np.random.seed(pexp[1])

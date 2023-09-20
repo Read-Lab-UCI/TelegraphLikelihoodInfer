@@ -21,6 +21,7 @@ if __name__=='__main__':
     parser.add_argument('--cutoff',help='stopping criterion for profile likelihood confidence interval, default 95%',type=float,nargs='?',default=0.95)
     parser.add_argument('--downsample',help='capture rate used for downsampling',type=str,default='1.0')
     parser.add_argument('--shape',help='grid shape of the library parameter space',type=list,default=[60,60,60])
+    parser.add_argument('--cell', help='cell number when sampling in repeat', type=int, default=1000)
     parser.add_argument('--optimize',help='whether or not to use optimization for Maximum likelihood inference and profile likelihood, default is True',nargs='?',default=True,type=bool)
     parser.add_argument('--sense',help='whether or not to compute sensitivity in the library,default is False',type=bool,default=False)
     parser.add_argument('--transition', help='whether or not to keep transition matrix in the library,default is False',
@@ -70,7 +71,7 @@ if __name__=='__main__':
         print('Generated/loaded new library in {0:.2f} minutes'.format((time()-start)/60))
     pool=Pool(cpu_count()-1)
     with pool:
-        result=list(tqdm(pool.imap(partial(parallel_likelihood, psim_path=args.psim, repeat=args.repeat,shape=args.shape,downsample=args.downsample,percentage=args.percentage, optimize=args.optimize, probability=args.probability, save_path=save_name+'_infer'),pexp), total=len(pexp)))
+        result=list(tqdm(pool.imap(partial(parallel_likelihood, psim_path=args.psim, repeat=args.repeat,shape=args.shape,downsample=args.downsample,percentage=args.percentage, optimize=args.optimize, probability=args.probability, save_path=save_name+'_infer',cell_number=args.cell),pexp), total=len(pexp)))
     pool.close()
 
 
