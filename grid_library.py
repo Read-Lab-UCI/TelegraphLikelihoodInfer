@@ -9,10 +9,12 @@ import matplotlib.pyplot as plt
 from matplotlib import colors
 
 def generate_library(shape,percentage=False,sense=False,transition=False,path='one_gene_two_state_library_grid',ksyn_max=2.3):
+    print(path)
     f = shelve.open(path)
     keys = list(f.keys())
     f.close()
     if 'batch0' not in keys and 'downsample_1.0' not in keys:
+        print(ksyn_max)
         unbinding = np.linspace(-3, 3, shape[0])
         binding = np.linspace(-3, 3,shape[1])
         ksyn = np.linspace(-0.3, ksyn_max,shape[2])
@@ -24,7 +26,8 @@ def generate_library(shape,percentage=False,sense=False,transition=False,path='o
         parameter[:, 3] = np.tile(binding, reps=shape[0] * shape[1])
         parameter[:, 1:-1] = 10 ** parameter[:, 1:-1]
         batch = [0]
-        max_state_tx=int(10**(ksyn_max+0.2))
+        max_state_tx=int(10**(ksyn_max+0.4/ksyn_max))
+        print(max_state_tx)
         max_state_tx=int(np.ceil((max_state_tx-50)/40))*40+50
         max_state = list(np.arange(50,max_state_tx)[::40])
         for i in max_state:
@@ -114,18 +117,20 @@ def generate_library(shape,percentage=False,sense=False,transition=False,path='o
 
 
 if __name__=='__main__':
-    generate_library(shape=[60,60,60], path='one_gene_two_state_library_grid', ksyn_max=2.3)
+    #generate_library(shape=[60,60,60], path='one_gene_two_state_library_grid', ksyn_max=2.3)
     parser=argparse.ArgumentParser()
     parser.add_argument('--shape',help='shape of grid for generating library, default:[60 60 60]',type=int,nargs='*',metavar='N',default=[60,60,60])
     parser.add_argument('--sense',help='whether or not to compute sensitivity in the library,default is False',type=bool,default=False)
     parser.add_argument('--transition', help='whether or not to keep transition matrix in the library,default is False',
                         type=bool, default=False)
-    parser.add_argument('--percentage', help='whether to use of percentage gene on in CME model,default False',
+    parser.add_argument('--percentage', help='whether to use of percentage gene on in CME model,default is False',
                         type=bool, nargs='?', default=False)
-    parser.add_argument('--path',help='library path',type=str,nargs='?',default='one_gene_two_State_library_grid')
-    parser.add_argument('--ksyn_max',help='maximum ksyn value in log10',type=float,default=2.3)
+    parser.add_argument('--path',help='library path',type=str,nargs='?',default='one_gene_two_state_library_grid')
+    parser.add_argument('--mRNA',help='maximum MRNA value',type=int,default=298)
     args=parser.parse_args()
-    generate_library(shape=args.shape,percentage=args.percentage,sense=args.sense,transition=args.transition,path=args.path,ksyn_max=args.ksyn_max)
+    ksyn_max=(np.log10(args.mRNA)+(np.log10(args.mRNA)**2-1.6)**0.5)/2
+    ksyn_max=max(ksyn_max,2.3)
+    generate_library(shape=args.shape,percentage=args.percentage,sense=args.sense,transition=args.transition,path=args.path,ksyn_max=ksyn_max)
     """
     f = shelve.open('one_gene_two_state_library_grid')
     keys = list(f.keys())
