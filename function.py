@@ -7,8 +7,10 @@ except:
     from scipy.sparse import diags
 from scipy.stats import binom,chi2
 from scipy.optimize import minimize
-from scipy.sparse import coo_array
+from scipy.sparse import coo_array,csr_array,lil_array
+from scipy.sparse.linalg import eigs
 from scipy.interpolate import interp1d
+
 try:
     import sparse
 except:
@@ -22,7 +24,7 @@ except:
 try:
     import tensorflow as tf
 except:
-    subprocess.check_call([sys.executable, '-m', 'pip', 'install', 'tensorflow'])
+    subprocess.check_call([sys.executable, '-m', 'pip', 'install', 'tensorflow==2.10.0'])
     import tensorflow as tf
 from copy import deepcopy
 import numpy as np
@@ -31,12 +33,83 @@ from tqdm import tqdm
 #from scipy.interpolate import RegularGridInterpolator
 #import matplotlib.pyplot as plt
 #from matplotlib import colors
+from pytorch_test import block_two_state_cme
 
 class init:
     def __init__(self):
 
         pass
 
+def compute_cme_one_gene_two_state(parameters, parameter_diction={}, shape=(), percentage=False, testing=False):
+    if type(parameters) == int:
+        index = np.unravel_index(parameters, shape=shape)
+        parameters = []
+        for i in range(len(index)):
+            parameters.append(parameter_diction[i][0][index[i]])
+    multiplier = parameters[1]
+    regulator_unbind = parameters[2]
+    transcription_off = parameters[0]
+    mdegrade_rate = parameters[4]
+
+    if percentage:
+        p_on = parameters[3]
+        regulator_bind = regulator_unbind * p_on / (1 - p_on)
+    else:
+        regulator_bind = parameters[3]
+        p_on = regulator_bind / (regulator_bind + regulator_unbind)
+    p_off = 1 - p_on
+    #print(regulator_bind)
+    if transcription_off < 1:
+        transcription_on = multiplier
+    else:
+        transcription_on = multiplier * transcription_off
+    tmp = max(transcription_on, transcription_off)
+    #if tmp > 300 or tmp < 1:
+    #    return csr_array(np.array([-np.inf]))
+    if multiplier > 1 or transcription_off==0:
+        mrna_max = transcription_on / mdegrade_rate
+    else:
+        mrna_max = transcription_off / mdegrade_rate
+    mrna_max = int(mrna_max)
+    if mrna_max < 20:
+        mrna_max = 48
+    else:
+        mrna_max = mrna_max * 2
+
+    # print('mrna max:',mrna_max)
+    index = np.linspace(0, mrna_max, mrna_max + 1)
+    one = np.ones(mrna_max + 1)
+    one[-1] = 0
+    transition = lil_array(((mrna_max + 1) * 2, (mrna_max + 1) * 2))
+    transition_on = diags([-regulator_unbind * np.ones(
+        mrna_max + 1) - transcription_on * one - mdegrade_rate * np.linspace(0, mrna_max, num=mrna_max + 1),
+                           mdegrade_rate * np.linspace(1, mrna_max, num=mrna_max),
+                           transcription_on *one], (0, 1, -1)).tolil()
+    transition_off = diags([-regulator_bind * np.ones(
+        mrna_max + 1) - transcription_off * one - mdegrade_rate * np.linspace(0, mrna_max, num=mrna_max + 1),
+                            mdegrade_rate * np.linspace(1, mrna_max, num=mrna_max),
+                            transcription_off*one], (0, 1, -1)).tolil()
+    transition[:mrna_max + 1, :mrna_max + 1] = transition_on
+    transition[mrna_max + 1:, mrna_max + 1:] = transition_off
+    transition[:mrna_max + 1, mrna_max + 1:] = diags(regulator_bind * np.ones(mrna_max + 1)).tolil()
+    transition[mrna_max + 1:, :mrna_max + 1] = diags(regulator_unbind * np.ones(mrna_max + 1)).tolil()
+    try:
+        v = np.linalg.svd(transition.toarray())[-1][-1]
+        #sigma,v=eigs(transition,k=1,sigma=0,OPpart='r')
+        v=np.abs(np.real(v))
+        #test=block_two_state_cme(np.array([parameters,parameters]),keep_transition=True)
+        v = v / np.sum(v)
+        #v_test=np.linalg.eig(transition.toarray())[-1]
+        if testing:
+            return v.T
+        else:
+            v = np.sum(v.reshape(2, int(v.ravel().shape[0] / 2)), axis=0)
+            v[v < 10**-12] = 0
+            v = v/np.sum(v)
+            return csr_array(v.ravel())
+    except:
+        print('null space error', parameters)
+        return csr_array(np.array([-np.inf]))
 
 def generate_binom_catelogue(maxcount=20, p=0.1):
     if os.path.isfile('downsample.h5'):
@@ -84,7 +157,7 @@ def filter_sparse_data(data):
     row_keep = data.row[indice_keep]
     return coo_array((data_keep, (row_keep, col_keep)))
 
-
+"""
 class block_two_state_cme:
     def __init__(self, param, save_path=None, percentage=True, keep_transition=False, sense=False, device='/cpu:0',
                  batch=0, print_flag=True):
@@ -159,11 +232,13 @@ class block_two_state_cme:
         k_off[~mask]=0
         identity = sparse.eye(self.max_state)
         with tf.device(self.device):
+            one=np.ones(self.max_state)
+            one[-1]=0
             self.dkd = sparse.COO.from_scipy_sparse(diags(np.arange(1, self.max_state), offsets=1) - diags(
                 np.arange(self.max_state)))
             dA_dkd = self.dkd * current.kd[:, np.newaxis, np.newaxis]
             self.tridiag_l = sparse.COO.from_scipy_sparse(diags(np.ones(self.max_state - 1), offsets=-1) - diags(
-                np.ones(self.max_state)))
+                one))
             A = k_on[:, np.newaxis, np.newaxis] * self.tridiag_l - current.f[:, np.newaxis,
                                                                     np.newaxis] * identity + dA_dkd
             B = k_off[:, np.newaxis, np.newaxis] * self.tridiag_l - current.h[:, np.newaxis,
@@ -266,7 +341,8 @@ class block_two_state_cme:
                 current.S = S
                 if self.print_flag:
                     print('{} time for solving sensitivity'.format(time()-start))
-    """
+"""
+"""
     def sensitivity(self, name):
         current = getattr(self, name)
         with tf.device(self.device):
@@ -306,7 +382,7 @@ class block_two_state_cme:
                 S.append(tf.squeeze(tf.linalg.lstsq(tf.sparse.to_dense(transition), b,fast=False)))
             S = np.array(S)
             current.S = np.array(tf.experimental.numpy.sum(tf.reshape(S, (S.shape[0], S.shape[1], 4, int(S.shape[-1] / 4))), axis=2))
-    """
+"""
 
 
 def eval_p(x0,p,index,value,cell_number=100000,percentage=False,downsample=False):
@@ -317,6 +393,7 @@ def eval_p(x0,p,index,value,cell_number=100000,percentage=False,downsample=False
     else:
         parameter = np.array([[0, x0[0], x0[1], value, 1], [0, x0[0], x0[1], value, 1]])
     distribution=block_two_state_cme(parameter,percentage=percentage,print_flag=False).batch0.distribution.todense()[0,:]
+    distribution=compute_cme_one_gene_two_state(parameter[0,:]).todense().squeeze()
     #plt.plot(distribution)
     #plt.show()
     if downsample!=1:
@@ -363,6 +440,7 @@ def optimize_profile3(likelihood,shape,distribution,cell_number=100000,percentag
         #for i in tqdm(range(temp.shape[0]),total=temp.shape[0]):
         min_LL=temp.min()
         for i in range(temp.shape[0]):
+            start=time()
             j, k = np.unravel_index(np.argmin(temp[i, :, :]), shape=temp[i, :, :].shape)
             #if probability:
             #    if temp[i,:,:].min()>(min_LL-np.log(0.9)*cell_number):
@@ -380,6 +458,7 @@ def optimize_profile3(likelihood,shape,distribution,cell_number=100000,percentag
             #    initial=res.x
             #else:
             #    initial=[parameter[l1[1]][j],parameter[l1[2]][k]]
+
             initial = [parameter[l1[1]][j], parameter[l1[2]][k]]
             res=minimize(eval_p,x0=initial,args=(distribution,axis,parameter[l1[0]][i],cell_number,percentage,float(downsample)),bounds=bounds,method='L-BFGS-B')
             if res.fun<likelihood_min:
@@ -390,6 +469,7 @@ def optimize_profile3(likelihood,shape,distribution,cell_number=100000,percentag
             max_param=np.concatenate(([parameter[l1[0]][i]],infer_min))
             inference.append(max_param)
             min_LL=min(min(max_like),min_LL)
+            print(i,time()-start)
         inference=np.array(inference)
         inference = inference[:,l2]
         max_like=np.array(max_like)/cell_number
@@ -430,17 +510,21 @@ def parallel_likelihood(pexp_list,psim_path,cell_number=100000,repeat=0,max_cell
         else:
             cell_number=cell
     try:
-        cutoff=chi2.ppf(1-alpha,df=1)/2
+        cutoff = chi2.ppf(1-alpha, df=1)/2
         if repeat>0:
             sample=np.random.choice(np.arange(pexp.shape[0]),size=max_cell_number,p=pexp)
         g=shelve.open(psim_path,'r')
         psim=g['downsample_'+str(downsample)]
         g.close()
-        print('successful loaded library')
+        print('successful loaded library parallel')
+        print(psim.shape[1])
         max_m = max(pexp.shape[0], psim.shape[1])
+        print('max_m')
         psim.resize((psim.shape[0], max_m))
+        print('psim')
         psim=np.clip(psim.todense(),a_min=10**-11,a_max=1)
         sample_histogram=np.zeros((repeat+1,max_m))
+        print('sample')
         sample_histogram[0,:pexp.shape[0]]=pexp
         print('psim resize')
         for i in range(1,repeat+1):
@@ -470,14 +554,12 @@ def parallel_likelihood(pexp_list,psim_path,cell_number=100000,repeat=0,max_cell
             if optimize:
                 profile=optimize_profile3(likelihood[i,:],np.array(shape),distribution=sample_histogram[i,:],percentage=percentage,cell_number=cell_number,probability=probability,downsample=downsample,cutoff=cutoff)
                 print('optimized')
-                profile_dict['MLE'][i,:]=find_MLE(profile)
                 profile_dict['ksyn']['max_like'][i,:]=profile['ksyn']['max_like']
                 profile_dict['ksyn']['parameter'][i, :,:] = profile['ksyn']['parameter']
                 profile_dict['koff']['max_like'][i, :] = profile['koff']['max_like']
                 profile_dict['koff']['parameter'][i, :,:] = profile['koff']['parameter']
                 profile_dict['kon']['max_like'][i, :] = profile['kon']['max_like']
                 profile_dict['kon']['parameter'][i, :,:] = profile['kon']['parameter']
-                
             else:
                 for axis,name in zip([0,1,2],['ksyn','koff','kon']):
                     if axis == 0:
@@ -497,8 +579,8 @@ def parallel_likelihood(pexp_list,psim_path,cell_number=100000,repeat=0,max_cell
                         profile_dict[name]['max_like'][i,index]=temp[index,j,k]
                         profile_dict[name]['parameter'][i,index,:]=np.concatenate(parameter[l1[0]][index],parameter[l1[1]][j],parameter[l1[2]][k])[l2]
                 index=np.unravel_index(np.argmax(likelihood[i,:]),shape=shape)
-                profile_dict['MLE'][i,:]=np.array([ksyn[index[0]],koff[index[1]],kon[index[2]]])
-
+                #profile_dict['MLE'][i,:]=np.array([ksyn[index[0]],koff[index[1]],kon[index[2]]])
+        profile_dict['MLE']=find_MLE(profile_dict)
         if self_infer:
             profile_dict['CI'][:, 0, :, :] = find_CI(profile_dict, cutoff, cell=1000)
             profile_dict['CI'][:, 1, :, :] = find_CI(profile_dict, cutoff, cell=10000)
@@ -507,7 +589,7 @@ def parallel_likelihood(pexp_list,psim_path,cell_number=100000,repeat=0,max_cell
             profile_dict['CI'][:, 0, :, :] = find_CI(profile_dict, cutoff, cell=profile_dict['cell_number'])
         #profile_dict=find_cell_CI(profile_dict,cutoff,error_width=0.3)
         print(time()-start_time)
-        if name:
+        if save_path:
             while True:
                 try:
                     g=shelve.open(save_path+'_'+name,writeback=True)
@@ -524,14 +606,17 @@ def parallel_likelihood(pexp_list,psim_path,cell_number=100000,repeat=0,max_cell
         return np.nan
 
 def find_MLE(profile):
-    param=[]
-    mle=[]
-    for i in ['ksyn','koff','kon']:
-        index=np.argmin(profile[i]['max_like'])
-        param.append(profile[i]['parameter'].squeeze()[index,:])
-        mle.append(profile[i]['max_like'].squeeze()[index])
-    index=np.argmin(mle)
-    return param[index]
+    param=np.zeros((profile['histogram'].shape[0]+1,3))
+    for j in range(param.shape[0]-1):
+        param_temp=[]
+        mle = []
+        for i in ['ksyn','koff','kon']:
+            index=np.argmin(profile[i]['max_like'][j])
+            param_temp.append(profile[i]['parameter'][j][index,:])
+            mle.append(profile[i]['max_like'][j][index])
+        index=np.argmin(mle)
+        param[j,:]=param_temp[index]
+    return param
 
 def find_cell_CI(profile_dict, cutoff=1.92,error_width=0.3):
     cell_array=[]
@@ -566,7 +651,7 @@ def find_cell_CI(profile_dict, cutoff=1.92,error_width=0.3):
     profile_dict['cell_number with {} uncertainty'.format(error_width)]=cell_array
     return profile_dict
 
-def find_CI(profile_dict,cutoff=1.92,cell=0,normalize=True):
+def find_CI(profile_dict,cutoff=1.92,cell=0,normalize=True,infer_factor=3):
     width_array=[]
     for i in range(profile_dict['histogram'].shape[0]):
         temp_width=[]
@@ -587,16 +672,25 @@ def find_CI(profile_dict,cutoff=1.92,cell=0,normalize=True):
             #else:
             #    lower_int=interp1d(tmp[:min_index+1],profile_dict[j]['parameter'][i,:min_index+1,index])
             #    upper_int=interp1d(tmp[min_index:],profile_dict[j]['parameter'][i,min_index:,index])
-            try:
-                lower_int = interp1d(tmp[:min_index + 1], profile_dict[j]['parameter'][i, :min_index + 1, index])
-                lower_bound=lower_int(cutoff)
-            except:
-                lower_bound=profile_dict[j]['parameter'][i, 0, index]
-            try:
-                upper_int = interp1d(tmp[min_index:], profile_dict[j]['parameter'][i, min_index:, index])
-                upper_bound=upper_int(cutoff)
-            except:
-                upper_bound = profile_dict[j]['parameter'][i, -1, index]
+            lower_int=interp1d(profile_dict[j]['parameter'][i,:min_index+1,index],tmp[:min_index+1])
+            param=np.linspace(profile_dict[j]['parameter'][i,0,index],profile_dict[j]['parameter'][i,min_index,index],profile_dict[j]['parameter'][i,:min_index,index].shape[0]*infer_factor+1)
+            lower_profile=lower_int(param)
+            lower_bound=param[np.where(lower_profile<cutoff)[0][0]]
+            upper_int=interp1d(profile_dict[j]['parameter'][i,min_index:,index],tmp[min_index:])
+            param=np.linspace(profile_dict[j]['parameter'][i,min_index,index],profile_dict[j]['parameter'][i,-1,index],profile_dict[j]['parameter'][i,min_index:,index].shape[0]*infer_factor+1)
+            upper_profile=upper_int(param)
+            upper_bound=param[np.where(upper_profile<cutoff)[0][-1]]
+
+            #try:
+            #    lower_int = interp1d(tmp[:min_index + 1], profile_dict[j]['parameter'][i, :min_index + 1, index])
+            #    lower_bound=lower_int(cutoff)
+            #except:
+            #    lower_bound=profile_dict[j]['parameter'][i, 0, index]
+            #try:
+            #    upper_int = interp1d(tmp[min_index:], profile_dict[j]['parameter'][i, min_index:, index])
+            #    upper_bound=upper_int(cutoff)
+            #except:
+            #    upper_bound = profile_dict[j]['parameter'][i, -1, index]
             width=upper_bound-lower_bound
             temp_width.append([lower_bound,upper_bound,width,width/profile_dict['MLE'][i,index],width/(profile_dict[j]['parameter'][i,-1,index]-profile_dict[j]['parameter'][i,0,index])])
         width_array.append(temp_width)
