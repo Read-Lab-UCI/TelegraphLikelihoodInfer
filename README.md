@@ -24,6 +24,14 @@
  By defaut, most genes has rather small expression that is less than 300, for genes with expression larger than maxcount, they will not be processed. For a downsample rate 
  of 0.3, the library max will be around 1000. 
 
+ The pipeline can also run without optimization when profiling the likelihood, this is particular useful when high precision likelihood is not of interest, and a library 
+ with large number of grid points has been constructed (a default of 60,60,60 grid library can fit into a 4G core with no issue, increasing the library size will demand 
+ a lot more memory, but with finer grid point, skipping optimization is possible). One can first run inference without optimization, run again for those which with good 
+ identifiability for better accuracy.
+ ```
+ python wrapper.py --pexp histogram_shelve --optimize False
+ ```
+
  To compute mRNA distribution from kinetic parameter, the default parameters are ksyn, koff, kon, if one desires to use gene state percentage on instead of kon:
  ```
  python wrapper.py --counts mRNA_count_matrix_file.csv --percentage True
