@@ -1,7 +1,13 @@
-import argparse,os,shelve,platform,subprocess
+import argparse,os,shelve,platform,subprocess,sys
 from multiprocessing import Pool,cpu_count
-import pandas as pd
-import numpy as np
+try:
+    import pandas as pd
+except:
+    subprocess.check_call([sys.executable, '-m', 'pip', 'install', 'pandas'])
+try:
+    import numpy as np
+except:
+    subprocess.check_call([sys.executable, '-m', 'pip', 'install', 'numpy==1.23.0'])
 from functools import partial
 from time import time
 if __name__=='__main__':
@@ -27,55 +33,79 @@ if __name__=='__main__':
     parser.add_argument('--transition', help='whether or not to keep transition matrix in the library,default is False',
                         type=bool, default=False)
     parser.add_argument('--index',help='index in histogram shelve list',type=int,default=0)
-    parser.add_argument('--end',help='number of distributions to run for this batch',type=int,nargs='?')
+    parser.add_argument('--end',help='number of distributions to run for this batch',type=int,nargs='?',default=0)
     parser.add_argument('--loop',help='whether to run in for loop,default is 0',type=int,default=0)
     parser.add_argument('--self',help='whether to self infer, default is 0', type=int, default=0)
     parser.add_argument('--maxcount',help='max_mrna number for library, if downsample exists, this will be extrapolated for downsample,  default is 298',type=int,default=298)
     args=parser.parse_args()
     max_count=-1
     if args.self:
-        missing=[]
-        if os.path.exists('library_300_infer_batch_'+str(args.index)+'.dat'):
-            keys=list(shelve.open('library_300_infer_batch_'+str(args.index)).keys())
-            if len(keys)==args.end:
+        if args.end==0:
+            try:
+                args.end=shelve.open(args.psim,'r')['parameter'].shape[0]
+            except:
+                print('please provide a valid library directory or a working library')
                 exit()
-            elif len(keys)==0:
-                for i in range(args.index,args.index+args.end):
-                    keys.append(str(i))
-        else:
-            keys=[]
+        missing=[]
+        g=shelve.open(args.psim+'_infer_batch_'+str(args.index),writeback=True)
+        keys=list(g.keys())
         for i in range(args.index,args.index+args.end):
-            if os.path.exists('library_300_infer_'+str(i)+'.dat') or (str(i) in keys):
+            if os.path.exists(args.psim+'_infer_'+str(i)+'.dat'):
+                h=shelve.open(args.psim+'_infer_'+str(i))
+                g[str(i)]=h[str(i)]
+                h.close()
+                os.remove(args.psim+'_infer_'+str(i)+'.dat')
+                os.remove(args.psim + '_infer_' + str(i) + '.dir')
+                os.remove(args.psim + '_infer_' + str(i) + '.bak')
+                continue
+            elif str(i) in keys:
                 continue
             else:
                 missing.append(i)
+        g.close()
         if len(missing)==0:
             exit()
-        try:
-            g=shelve.open(args.psim)
-            if args.end!=0:
-                pexp=g['downsample_'+str(args.downsample)].tocsr()[missing].todense()
-            else:
-                pexp=g['downsample_'+str(args.downsample)].todense()
-            g.close()
-            pexp=np.clip(pexp,a_min=10**-11,a_max=1)
-            pexp=pexp/(np.sum(pexp,axis=1)[:,None])
-            save_name=args.psim
-        except:
-            print('please provide library for self infer')
-            exit()
+        g=shelve.open(args.psim)
+        pexp=g['downsample_'+str(args.downsample)].tocsr()[missing].todense()
+        g.close()
+        pexp=np.clip(pexp,a_min=10**-11,a_max=1)
+        pexp=pexp/(np.sum(pexp,axis=1)[:,None])
+        save_name=args.psim
+        pexp=zip(pexp,[100000]*pexp.shape[0],missing)
     else:
         if os.path.exists(args.pexp+'.dir'):
             try:
-                if args.end == None:
-                    pexp =shelve.open(args.pexp)['histogram']
+                if args.end == 0:
+                    tmp_pexp = shelve.open(args.pexp)['histogram']
+                    args.end = len(tmp_pexp)
                 else:
-                    pexp = shelve.open(args.pexp)['histogram'][args.index:args.index+args.end]
+                    tmp_pexp = shelve.open(args.pexp)['histogram'][args.index:args.index+args.end]
                 print('directly loading specific histogram from file')
             except:
                 print('error in loading distribution')
                 exit()
             save_name=args.pexp[:-10]
+            missing = []
+            pexp=[]
+            g = shelve.open(save_name + '_infer_batch_' + str(args.index), writeback=True)
+            keys = list(g.keys())
+            for i in range(args.end):
+                if os.path.exists(save_name + '_infer_' + tmp_pexp[i][-1] + '.dat'):
+                    h = shelve.open(save_name + '_infer_' + tmp_pexp[i][-1])
+                    g[tmp_pexp[i][-1]] = h[tmp_pexp[i][-1]]
+                    h.close()
+                    os.remove(save_name + '_infer_' + tmp_pexp[i][-1] + '.dat')
+                    os.remove(save_name + '_infer_' + tmp_pexp[i][-1] + '.dir')
+                    os.remove(save_name + '_infer_' + tmp_pexp[i][-1] + '.bak')
+                    continue
+                elif tmp_pexp[i][-1] in keys:
+                    continue
+                else:
+                    pexp.append(tmp_pexp[i])
+                    missing.append(tmp_pexp[i][-1])
+            g.close()
+            if len(missing) == 0:
+                exit()
         elif os.path.exists(args.counts):
             count=pd.read_csv(args.counts,sep=',',index_col=0,header=0)
             if args.transpose==True:
@@ -138,22 +168,18 @@ if __name__=='__main__':
             start=time()
             from grid_library import *
             if len(args.pexp)>1:
-                args.psim=os.path.join(os.path.dirname(args.pexp),'one_gene_two_state_library_grid')
+                args.psim=os.path.join(os.path.dirname(args.pexp),'one_gene_two_state_library_grid_'+str(max_count))
             elif len(args.counts)>1:
-                args.psim=os.path.join(os.path.dirname(args.counts),'one_gene_two_state_library_grid')
+                args.psim=os.path.join(os.path.dirname(args.counts),'one_gene_two_state_library_grid_'+str(max_count))
             ksyn_max=np.log10(max_count)
             ksyn_max=ksyn_max-0.4/ksyn_max
             generate_library(args.shape,args.percentage,args.sense,args.transition,path=args.psim,ksyn_max=ksyn_max)
             print('Generated/loaded new library in {0:.2f} minutes'.format((time()-start)/60))
     from function import *
     if args.loop:
-        for i in range(args.end):
-            if args.self:
-                if args.index+i in missing:
-                    print(args.index+i)
-                    parallel_likelihood([pexp[i,:],1000000,str(args.index+i)],psim_path=args.psim ,repeat=args.repeat,shape=args.shape,downsample=args.downsample,percentage=args.percentage,optimize=args.optimize,probability=args.probability,save_path=save_name+'_infer',cell_number=args.cell,self_infer=args.self)
-            else:
-                parallel_likelihood(pexp[i],psim_path=args.psim, repeat=args.repeat,shape=args.shape,downsample=args.downsample,percentage=args.percentage,optimize=args.optimize,probability=args.probability, save_path=save_name+'_infer',cell_number=args.cell,self_infer=args.self)
+        for i in range(len(missing)):
+            print(missing[i])
+            parallel_likelihood(pexp[i],psim_path=args.psim, repeat=args.repeat,shape=args.shape,downsample=args.downsample,percentage=args.percentage,optimize=args.optimize,probability=args.probability, save_path=save_name+'_infer',cell_number=args.cell,self_infer=args.self)
     else:
         if platform.system()=='Linux':
             number_available_core=min(len(os.sched_getaffinity(0)),args.parallel)
@@ -161,19 +187,12 @@ if __name__=='__main__':
             number_available_core=min(cpu_count()-1,args.parallel)
         pool=Pool(number_available_core)
         total_number=len(pexp)
-        if args.self:
-            pexp=zip(pexp,[100000]*pexp.shape[0],missing)
         with pool:
             result=list(tqdm(pool.imap(partial(parallel_likelihood, psim_path=args.psim, repeat=args.repeat,shape=args.shape,downsample=args.downsample,percentage=args.percentage, optimize=args.optimize, probability=args.probability, save_path=save_name+'_infer',cell_number=args.cell,self_infer=args.self),pexp), total=total_number))
         pool.close()
     g=shelve.open(save_name+'_infer_batch_'+str(args.index),writeback=True)
-    if args.end == None:
-        args.end=len(pexp)
-    for i in range(args.end):
-        if args.self:
-            name=str(args.index+i)
-        else:
-            name=pexp[i][2]
+    for i in range(len(missing)):
+        name=str(pexp[i][2])
         if os.path.exists(save_name+'_infer_'+name+'.dat'):
             tmp=shelve.open(save_name+'_infer_'+name)[name]
             g[name]=tmp

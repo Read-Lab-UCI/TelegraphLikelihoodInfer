@@ -10,6 +10,7 @@ from scipy.optimize import minimize
 from scipy.sparse import coo_array,csr_array,lil_array
 from scipy.sparse.linalg import eigs
 from scipy.interpolate import interp1d
+import matplotlib.pyplot as plt
 
 try:
     import sparse
@@ -392,7 +393,7 @@ def eval_p(x0,p,index,value,cell_number=100000,percentage=False,downsample=False
         parameter = np.array([[0, x0[0], value, x0[1], 1], [0, x0[0], value, x0[1], 1]])
     else:
         parameter = np.array([[0, x0[0], x0[1], value, 1], [0, x0[0], x0[1], value, 1]])
-    distribution=block_two_state_cme(parameter,percentage=percentage,print_flag=False).batch0.distribution.todense()[0,:]
+    #distribution=block_two_state_cme(parameter,percentage=percentage,print_flag=False).batch0.distribution.todense()[0,:]
     distribution=compute_cme_one_gene_two_state(parameter[0,:]).todense().squeeze()
     #plt.plot(distribution)
     #plt.show()
@@ -494,92 +495,113 @@ def optimize_likelihood(initial,distribution,cell_number=100000,percentage=False
     res=minimize(eval_p_3d,x0=initial,args=(distribution,percentage),bounds=bounds,method='L-BFGS-B')
     return res
 
-def parallel_likelihood(pexp_list,psim_path,cell_number=100000,repeat=0,max_cell_number=50000,shape=[60,60,60],percentage=False,downsample='1.0',probability=False,optimize=True,alpha=0.05,name=False,save_path=False,self_infer=False):
+def parallel_likelihood(pexp_list,psim_path,repeat=0,max_cell_number=50000,shape=[60,60,60],percentage=False,downsample='1.0',probability=False,optimize=True,alpha=0.05,save_path=False,self_infer=False,coarse_grain=5):
     start_time=time()
-    try:
-        np.random.seed(pexp_list[1])
-        name=str(pexp_list[2])
-        pexp=pexp_list[0].ravel()
-        cell=pexp_list[1]
-    except:
-        np.random.seed(cell_number)
-        pexp=pexp_list   
-    if 'cell' in locals():
-        if cell == 0:
-            cell_number=100000
-        else:
-            cell_number=cell
+    np.random.seed(pexp_list[1])
+    save_name=str(pexp_list[2])
+    pexp=pexp_list[0].ravel()
+    cell=pexp_list[1]
     try:
         cutoff = chi2.ppf(1-alpha, df=1)/2
         if repeat>0:
             sample=np.random.choice(np.arange(pexp.shape[0]),size=max_cell_number,p=pexp)
         g=shelve.open(psim_path,'r')
         psim=g['downsample_'+str(downsample)]
+        parameter=g['parameter']
         g.close()
+        ksyn=parameter[:,1].reshape(60,60,60)[:,0,0]
+        koff=parameter[:,2].reshape(60,60,60)[0,:,0]
+        kon =parameter[:,3].reshape(60,60,60)[0,0,:]
+        parameter=[ksyn,koff,kon]
         print('successful loaded library parallel')
-        print(psim.shape[1])
         max_m = max(pexp.shape[0], psim.shape[1])
-        print('max_m')
         psim.resize((psim.shape[0], max_m))
-        print('psim')
         psim=np.clip(psim.todense(),a_min=10**-11,a_max=1)
         sample_histogram=np.zeros((repeat+1,max_m))
-        print('sample')
         sample_histogram[0,:pexp.shape[0]]=pexp
-        print('psim resize')
         for i in range(1,repeat+1):
-            sample_index=np.random.choice(np.arange(sample.shape[0]),replace=False,size=cell_number)
+            sample_index=np.random.choice(np.arange(sample.shape[0]),replace=False,size=cell)
             sample_histogram[i,:]=np.histogram(sample[sample_index],bins=max_m,range=(0,max_m),density=True)[0]
         if downsample != '1.0':
             catelogue=generate_binom_catelogue(maxcount=sample_histogram.shape[1]-1,p=float(downsample))
-            origin_sample_histogram=deepcopy(sample_histogram)
+            #origin_sample_histogram=deepcopy(sample_histogram)
             sample_histogram=sample_histogram@catelogue
-        likelihood=-cell_number*np.matmul(np.log(psim),sample_histogram.T).T
-        print('calcualted likelihood')
+        likelihood=-cell*np.matmul(np.log(psim),sample_histogram.T).T
         if self_infer:
             n_cell_number=3
         else:
             n_cell_number=1
-        profile_dict={'cell_number':cell_number,'histogram':sample_histogram,'MLE':np.zeros((repeat+1,3)),'CI':np.zeros((repeat+1,n_cell_number,3,5)),'ksyn':{'max_like':np.zeros((repeat+1,shape[0])),'parameter':np.zeros((repeat+1,shape[0],3))},'koff':{'max_like':np.zeros((repeat+1,shape[0])),'parameter':np.zeros((repeat+1,shape[1],3))},'kon':{'max_like':np.zeros((repeat+1,shape[0])),'parameter':np.zeros((repeat+1,shape[2],3))}}
-        if not optimize:
-            ksyn = 10 ** np.linspace(-0.3, 2.3, shape[0])
-            koff = 10 ** np.linspace(-3, 3, shape[1])
-            kon = 10 ** np.linspace(-3, 3, shape[2])
-            parameter = [ksyn, koff, kon]
-        if repeat ==1:
-            start=1
+        profile_dict={'cell_number':cell,'histogram':sample_histogram,'MLE':np.zeros((repeat+2,3)),'CI':np.zeros((repeat+1,n_cell_number,3,5)),'ksyn':{'max_like':np.zeros((repeat+1,shape[0])),'parameter':np.zeros((repeat+1,shape[0],3))},'koff':{'max_like':np.zeros((repeat+1,shape[0])),'parameter':np.zeros((repeat+1,shape[1],3))},'kon':{'max_like':np.zeros((repeat+1,shape[0])),'parameter':np.zeros((repeat+1,shape[2],3))}}
+        key_dict = {0: 'ksyn', 1: 'koff', 2: 'kon'}
+        start=time()
+        for i in range(repeat+1):
+            tmp=likelihood[i,:].reshape(shape)
+            for j in key_dict.keys():
+                if j==1:
+                    tmp=np.moveaxis(tmp,[0,1,2],[1,0,2])
+                    key=[0,2]
+                elif j==2:
+                    tmp=np.moveaxis(tmp,[0,1,2],[1,2,0])
+                    key=[0,1]
+                else:
+                    key=[1,2]
+                for k in range(tmp.shape[0]):
+                    min_index=np.unravel_index(tmp[k,:,:].argmin(),shape=(shape[key[0]],shape[key[1]]))
+                    profile_dict[key_dict[j]]['parameter'][i,k,j]=parameter[j][k]
+                    profile_dict[key_dict[j]]['parameter'][i,k, key[0]] = parameter[key[0]][min_index[0]]
+                    profile_dict[key_dict[j]]['parameter'][i,k, key[1]] = parameter[key[1]][min_index[1]]
+                    profile_dict[key_dict[j]]['max_like'][i,k]=tmp[k,min_index[0],min_index[1]]
+        print('coarse grain profile in {}s'.format(time()-start))
+        #profile_dict['ksyn']['max_like']=likelihood.reshape((repeat+1,shape[0],shape[1],shape[2])).min(axis=(2,3))/cell
+        #profile_dict['koff']['max_like'] = likelihood.reshape((repeat + 1, shape[0], shape[1], shape[2])).min(axis=(1, 3))/cell
+        #profile_dict['kon']['max_like'] = likelihood.reshape((repeat + 1, shape[0], shape[1], shape[2])).min(axis=(1, 2))/cell
+        start=time()
+        profile_dict['MLE']=find_MLE(profile_dict)
+        if self_infer:
+            profile_dict['CI'][:, 0, :, :] = find_CI(profile_dict, cutoff+coarse_grain+3, cell=1000)
+            profile_dict['CI'][:, 1, :, :] = find_CI(profile_dict, cutoff+coarse_grain+3, cell=10000)
+            profile_dict['CI'][:, 2, :, :] = find_CI(profile_dict, cutoff+coarse_grain+3, cell=100000)
         else:
-            start=0
-        for i in range(start,repeat+1):
-            if optimize:
-                profile=optimize_profile3(likelihood[i,:],np.array(shape),distribution=sample_histogram[i,:],percentage=percentage,cell_number=cell_number,probability=probability,downsample=downsample,cutoff=cutoff)
-                print('optimized')
-                profile_dict['ksyn']['max_like'][i,:]=profile['ksyn']['max_like']
-                profile_dict['ksyn']['parameter'][i, :,:] = profile['ksyn']['parameter']
-                profile_dict['koff']['max_like'][i, :] = profile['koff']['max_like']
-                profile_dict['koff']['parameter'][i, :,:] = profile['koff']['parameter']
-                profile_dict['kon']['max_like'][i, :] = profile['kon']['max_like']
-                profile_dict['kon']['parameter'][i, :,:] = profile['kon']['parameter']
-            else:
-                for axis,name in zip([0,1,2],['ksyn','koff','kon']):
-                    if axis == 0:
-                        l1 = [0, 1, 2]
-                        l2 = [0, 1, 2]
-                        temp = np.reshape(likelihood[i,:],shape=shape)
-                    elif axis == 1:
-                        l1 = [1, 0, 2]
-                        l2 = [1, 0, 2]
-                        temp = np.moveaxis(np.reshape(likelihood[i,:],shape=shape), [0, 1, 2], [1, 0, 2])
-                    else:
-                        l1 = [2, 0, 1]
-                        l2 = [1, 2, 0]
-                        temp = np.moveaxis(np.reshape(likelihood[i,:],shape=shape), [0, 1, 2], [1, 2, 0])
-                    for index in tqdm(range(temp.shape[0]), total=temp.shape[0]):
-                        j, k = np.unravel_index(np.argmax(temp[index, :, :]), shape=temp[index, :, :].shape)
-                        profile_dict[name]['max_like'][i,index]=temp[index,j,k]
-                        profile_dict[name]['parameter'][i,index,:]=np.concatenate(parameter[l1[0]][index],parameter[l1[1]][j],parameter[l1[2]][k])[l2]
-                index=np.unravel_index(np.argmax(likelihood[i,:]),shape=shape)
-                #profile_dict['MLE'][i,:]=np.array([ksyn[index[0]],koff[index[1]],kon[index[2]]])
+            profile_dict['CI'][:, 0, :, :] = find_CI(profile_dict, cutoff+coarse_grain+3, cell=profile_dict['cell_number'])
+        print('coarse grain CI in {}s'.format(time() - start))
+        for i in tqdm(range(repeat + 1)):
+            minimum_like=likelihood[i,:].min()
+            tmp = likelihood[i, :] - minimum_like
+            index_to_search = np.nonzero(tmp < cutoff + coarse_grain)
+            index_to_search = np.unravel_index(index_to_search, shape=shape)
+            for name in key_dict.keys():
+                #plt.plot(profile_dict[key_dict[name]]['max_like'][i,:]-minimum_like,label='coarse grain',marker='o')
+                for cell_index in range(n_cell_number):
+                    if np.log10(profile_dict['CI'][i,cell_index,name,3])>4:
+                        continue
+                    index=set(index_to_search[name].ravel())
+                    index_larger=set(np.where(profile_dict[key_dict[name]]['max_like'][i,:]-minimum_like>cutoff+3)[0])
+                    index=index.intersection(index_larger)
+                    for j in index:
+                        if profile_dict[key_dict[name]]['max_like'][i,j]-minimum_like<cutoff+3:
+                            continue
+                        bounds = [[], []]
+                        grid_index=np.nonzero(index_to_search[name].flatten()==j)
+                        other_keys=list(key_dict.keys())
+                        other_keys.remove(name)
+                        #other_keys=np.array(other_keys)
+                        bounds[0]=(parameter[other_keys[0]][index_to_search[other_keys[0]].ravel()[grid_index].min()],parameter[other_keys[0]][index_to_search[other_keys[0]].ravel()[grid_index].max()])
+                        bounds[1]=(parameter[other_keys[1]][index_to_search[other_keys[1]].ravel()[grid_index].min()],parameter[other_keys[1]][index_to_search[other_keys[1]].ravel()[grid_index].max()])
+                        tmp=tmp.reshape(60,60,60)
+                        if name==0:
+                            min_index=np.unravel_index(tmp[j,:,:].argmin(),shape=(shape[other_keys[0]],shape[other_keys[1]]))
+                        elif name==1:
+                            min_index=np.unravel_index(tmp[:,j,:].argmin(),shape=(shape[other_keys[0]],shape[other_keys[1]]))
+                        else:
+                            min_index=np.unravel_index(tmp[:,:,j].argmin(),shape=(shape[other_keys[0]],shape[other_keys[1]]))
+                        initial=[parameter[other_keys[0]][min_index[0]],parameter[other_keys[1]][min_index[1]]]
+                        res = minimize(eval_p, x0=initial, args=(sample_histogram[i,:], name, parameter[name][j], cell, percentage, float(downsample)), bounds=bounds,method='L-BFGS-B')
+                        profile_dict[key_dict[name]]['max_like'][i,j]=res.fun
+                        profile_dict[key_dict[name]]['parameter'][i,j,other_keys]=res.x
+                #plt.plot(profile_dict[key_dict[name]]['max_like'][i, :] - profile_dict[key_dict[name]]['max_like'][i, :].min(),label='optimized')
+                #plt.ylim(0,2.2)
+                #plt.legend()
+                #plt.show()
         profile_dict['MLE']=find_MLE(profile_dict)
         if self_infer:
             profile_dict['CI'][:, 0, :, :] = find_CI(profile_dict, cutoff, cell=1000)
@@ -587,13 +609,13 @@ def parallel_likelihood(pexp_list,psim_path,cell_number=100000,repeat=0,max_cell
             profile_dict['CI'][:, 2, :, :] = find_CI(profile_dict, cutoff, cell=100000)
         else:
             profile_dict['CI'][:, 0, :, :] = find_CI(profile_dict, cutoff, cell=profile_dict['cell_number'])
-        #profile_dict=find_cell_CI(profile_dict,cutoff,error_width=0.3)
+
         print(time()-start_time)
         if save_path:
             while True:
                 try:
-                    g=shelve.open(save_path+'_'+name,writeback=True)
-                    g[name]=profile_dict
+                    g=shelve.open(save_path+'_'+save_name,writeback=True)
+                    g[save_name]=profile_dict
                     g.close()
                     print('success saved output')
                     break
@@ -658,10 +680,7 @@ def find_CI(profile_dict,cutoff=1.92,cell=0,normalize=True,infer_factor=3):
         for index,j in enumerate(['ksyn','koff','kon']):
             tmp=profile_dict[j]['max_like'][i,:].ravel()
             tmp=tmp-tmp.min()
-            if cell:
-                tmp=tmp*cell
-            else:
-                tmp=tmp*profile_dict['cell_number']
+            tmp=tmp*cell
             min_index=tmp.argmin()
             #if min_index==0:
             #    upper_int = interp1d(tmp[min_index:], profile_dict[j]['parameter'][i, min_index:, index])
@@ -672,15 +691,28 @@ def find_CI(profile_dict,cutoff=1.92,cell=0,normalize=True,infer_factor=3):
             #else:
             #    lower_int=interp1d(tmp[:min_index+1],profile_dict[j]['parameter'][i,:min_index+1,index])
             #    upper_int=interp1d(tmp[min_index:],profile_dict[j]['parameter'][i,min_index:,index])
-            lower_int=interp1d(profile_dict[j]['parameter'][i,:min_index+1,index],tmp[:min_index+1])
-            param=np.linspace(profile_dict[j]['parameter'][i,0,index],profile_dict[j]['parameter'][i,min_index,index],profile_dict[j]['parameter'][i,:min_index,index].shape[0]*infer_factor+1)
-            lower_profile=lower_int(param)
-            lower_bound=param[np.where(lower_profile<cutoff)[0][0]]
-            upper_int=interp1d(profile_dict[j]['parameter'][i,min_index:,index],tmp[min_index:])
-            param=np.linspace(profile_dict[j]['parameter'][i,min_index,index],profile_dict[j]['parameter'][i,-1,index],profile_dict[j]['parameter'][i,min_index:,index].shape[0]*infer_factor+1)
-            upper_profile=upper_int(param)
-            upper_bound=param[np.where(upper_profile<cutoff)[0][-1]]
-
+            if min_index==0:
+                lower_bound=profile_dict[j]['parameter'][i,0,index]
+            else:
+                lower_int=interp1d(profile_dict[j]['parameter'][i,:min_index+1,index],tmp[:min_index+1])
+                param=np.linspace(profile_dict[j]['parameter'][i,0,index],profile_dict[j]['parameter'][i,min_index,index],profile_dict[j]['parameter'][i,:min_index,index].shape[0]*infer_factor+1)
+                lower_profile=lower_int(param)
+                lower_bound=np.where(lower_profile<cutoff)[0]
+                if lower_bound.shape[0]==1:
+                    lower_bound=(profile_dict[j]['parameter'][i,min_index,index]-profile_dict[j]['parameter'][i,min_index-1,index])/(profile_dict[j]['max_like'][i,min_index]-profile_dict[j]['max_like'][i,min_index-1])*cutoff+profile_dict[j]['parameter'][i,min_index-1,index]
+                else:
+                    lower_bound=param[lower_bound[0]]
+            if min_index==profile_dict[j]['parameter'][i,:,index].shape[0]-1:
+                upper_bound=profile_dict[j]['parameter'][i,-1,index]
+            else:
+                upper_int=interp1d(profile_dict[j]['parameter'][i,min_index:,index],tmp[min_index:])
+                param=np.linspace(profile_dict[j]['parameter'][i,min_index,index],profile_dict[j]['parameter'][i,-1,index],profile_dict[j]['parameter'][i,min_index:,index].shape[0]*infer_factor+1)
+                upper_profile=upper_int(param)
+                upper_bound=np.where(upper_profile<cutoff)[0]
+                if upper_bound.shape[0]==1:
+                    upper_bound=(profile_dict[j]['parameter'][i,min_index+1,index]-profile_dict[j]['parameter'][i,min_index,index])/(profile_dict[j]['max_like'][i,min_index+1]-profile_dict[j]['max_like'][i,min_index])*cutoff+profile_dict[j]['parameter'][i,min_index,index]
+                else:
+                    upper_bound=param[upper_bound[-1]]
             #try:
             #    lower_int = interp1d(tmp[:min_index + 1], profile_dict[j]['parameter'][i, :min_index + 1, index])
             #    lower_bound=lower_int(cutoff)
@@ -691,7 +723,9 @@ def find_CI(profile_dict,cutoff=1.92,cell=0,normalize=True,infer_factor=3):
             #    upper_bound=upper_int(cutoff)
             #except:
             #    upper_bound = profile_dict[j]['parameter'][i, -1, index]
-            width=upper_bound-lower_bound
+            if upper_bound-lower_bound<0.001:
+                pass
+            width=max(upper_bound-lower_bound,0.001)
             temp_width.append([lower_bound,upper_bound,width,width/profile_dict['MLE'][i,index],width/(profile_dict[j]['parameter'][i,-1,index]-profile_dict[j]['parameter'][i,0,index])])
         width_array.append(temp_width)
     width_array=np.array(width_array)
