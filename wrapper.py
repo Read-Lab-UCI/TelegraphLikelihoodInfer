@@ -37,6 +37,7 @@ if __name__=='__main__':
     parser.add_argument('--loop',help='whether to run in for loop,default is 0',type=int,default=0)
     parser.add_argument('--self',help='whether to self infer, default is 0', type=int, default=0)
     parser.add_argument('--maxcount',help='max_mrna number for library, if downsample exists, this will be extrapolated for downsample,  default is 298',type=int,default=298)
+    parser.add_argument('--coarse_grain',help='coarse_grain margin to use in profile likelihood,  default is 0.1',type=float, default=0.1)
     args=parser.parse_args()
     max_count=-1
     if args.self:
@@ -179,7 +180,7 @@ if __name__=='__main__':
     if args.loop:
         for i in range(len(missing)):
             print(missing[i])
-            parallel_likelihood(pexp[i],psim_path=args.psim, repeat=args.repeat,shape=args.shape,downsample=args.downsample,percentage=args.percentage,optimize=args.optimize,probability=args.probability, save_path=save_name+'_infer',cell_number=args.cell,self_infer=args.self)
+            parallel_likelihood(pexp[i],psim_path=args.psim, repeat=args.repeat,shape=args.shape,downsample=args.downsample,percentage=args.percentage,optimize=args.optimize,probability=args.probability, save_path=save_name+'_infer',self_infer=args.self,coarse_grain=args.coarse_grain)
     else:
         if platform.system()=='Linux':
             number_available_core=min(len(os.sched_getaffinity(0)),args.parallel)
@@ -188,7 +189,7 @@ if __name__=='__main__':
         pool=Pool(number_available_core)
         total_number=len(pexp)
         with pool:
-            result=list(tqdm(pool.imap(partial(parallel_likelihood, psim_path=args.psim, repeat=args.repeat,shape=args.shape,downsample=args.downsample,percentage=args.percentage, optimize=args.optimize, probability=args.probability, save_path=save_name+'_infer',cell_number=args.cell,self_infer=args.self),pexp), total=total_number))
+            result=list(tqdm(pool.imap(partial(parallel_likelihood, psim_path=args.psim, repeat=args.repeat,shape=args.shape,downsample=args.downsample,percentage=args.percentage, optimize=args.optimize, probability=args.probability, save_path=save_name+'_infer',self_infer=args.self,coarse_grain=args.coarse_grain),pexp), total=total_number))
         pool.close()
     g=shelve.open(save_name+'_infer_batch_'+str(args.index),writeback=True)
     for i in range(len(missing)):

@@ -495,7 +495,7 @@ def optimize_likelihood(initial,distribution,cell_number=100000,percentage=False
     res=minimize(eval_p_3d,x0=initial,args=(distribution,percentage),bounds=bounds,method='L-BFGS-B')
     return res
 
-def parallel_likelihood(pexp_list,psim_path,repeat=0,max_cell_number=50000,shape=[60,60,60],percentage=False,downsample='1.0',probability=False,optimize=True,alpha=0.05,save_path=False,self_infer=False,coarse_grain=5):
+def parallel_likelihood(pexp_list,psim_path,repeat=0,max_cell_number=50000,shape=[60,60,60],percentage=False,downsample='1.0',probability=False,optimize=True,alpha=0.05,save_path=False,self_infer=False,coarse_grain=0.1):
     start_time=time()
     np.random.seed(pexp_list[1])
     save_name=str(pexp_list[2])
@@ -522,7 +522,7 @@ def parallel_likelihood(pexp_list,psim_path,repeat=0,max_cell_number=50000,shape
         for i in range(1,repeat+1):
             sample_index=np.random.choice(np.arange(sample.shape[0]),replace=False,size=cell)
             sample_histogram[i,:]=np.histogram(sample[sample_index],bins=max_m,range=(0,max_m),density=True)[0]
-        if downsample != '1.0':
+        if str(downsample) != '1.0':
             catelogue=generate_binom_catelogue(maxcount=sample_histogram.shape[1]-1,p=float(downsample))
             #origin_sample_histogram=deepcopy(sample_histogram)
             sample_histogram=sample_histogram@catelogue
@@ -558,27 +558,27 @@ def parallel_likelihood(pexp_list,psim_path,repeat=0,max_cell_number=50000,shape
         start=time()
         profile_dict['MLE']=find_MLE(profile_dict)
         if self_infer:
-            profile_dict['CI'][:, 0, :, :] = find_CI(profile_dict, cutoff+coarse_grain+3, cell=1000)
-            profile_dict['CI'][:, 1, :, :] = find_CI(profile_dict, cutoff+coarse_grain+3, cell=10000)
-            profile_dict['CI'][:, 2, :, :] = find_CI(profile_dict, cutoff+coarse_grain+3, cell=100000)
+            profile_dict['CI'][:, 0, :, :] = find_CI(profile_dict, cutoff+coarse_grain*1000, cell=1000)
+            profile_dict['CI'][:, 1, :, :] = find_CI(profile_dict, cutoff+coarse_grain*10000, cell=10000)
+            profile_dict['CI'][:, 2, :, :] = find_CI(profile_dict, cutoff+coarse_grain*100000, cell=100000)
         else:
-            profile_dict['CI'][:, 0, :, :] = find_CI(profile_dict, cutoff+coarse_grain+3, cell=profile_dict['cell_number'])
+            profile_dict['CI'][:, 0, :, :] = find_CI(profile_dict, cutoff+coarse_grain*cell, cell=profile_dict['cell_number'])
         print('coarse grain CI in {}s'.format(time() - start))
         for i in tqdm(range(repeat + 1)):
-            minimum_like=likelihood[i,:].min()
+            minimum_like=-cell*np.sum(profile_dict['histogram'][i,:]*np.log(np.clip(profile_dict['histogram'][i,:],a_min=10**-11,a_max=1)))
             tmp = likelihood[i, :] - minimum_like
-            index_to_search = np.nonzero(tmp < cutoff + coarse_grain)
+            index_to_search = np.nonzero(tmp < cutoff + coarse_grain*cell)
             index_to_search = np.unravel_index(index_to_search, shape=shape)
             for name in key_dict.keys():
                 #plt.plot(profile_dict[key_dict[name]]['max_like'][i,:]-minimum_like,label='coarse grain',marker='o')
                 for cell_index in range(n_cell_number):
-                    if np.log10(profile_dict['CI'][i,cell_index,name,3])>4:
+                    if np.log10(profile_dict['CI'][i,cell_index,name,3])>2 or profile_dict['CI'][i,cell_index,name,-1]>0.5:
                         continue
                     index=set(index_to_search[name].ravel())
-                    index_larger=set(np.where(profile_dict[key_dict[name]]['max_like'][i,:]-minimum_like>cutoff+3)[0])
+                    index_larger=set(np.where(profile_dict[key_dict[name]]['max_like'][i,:]-minimum_like>cutoff)[0])
                     index=index.intersection(index_larger)
                     for j in index:
-                        if profile_dict[key_dict[name]]['max_like'][i,j]-minimum_like<cutoff+3:
+                        if profile_dict[key_dict[name]]['max_like'][i,j]-minimum_like<cutoff:
                             continue
                         bounds = [[], []]
                         grid_index=np.nonzero(index_to_search[name].flatten()==j)
@@ -596,6 +596,7 @@ def parallel_likelihood(pexp_list,psim_path,repeat=0,max_cell_number=50000,shape
                             min_index=np.unravel_index(tmp[:,:,j].argmin(),shape=(shape[other_keys[0]],shape[other_keys[1]]))
                         initial=[parameter[other_keys[0]][min_index[0]],parameter[other_keys[1]][min_index[1]]]
                         res = minimize(eval_p, x0=initial, args=(sample_histogram[i,:], name, parameter[name][j], cell, percentage, float(downsample)), bounds=bounds,method='L-BFGS-B')
+                        minimum_like=min(minimum_like,res.fun)
                         profile_dict[key_dict[name]]['max_like'][i,j]=res.fun
                         profile_dict[key_dict[name]]['parameter'][i,j,other_keys]=res.x
                 #plt.plot(profile_dict[key_dict[name]]['max_like'][i, :] - profile_dict[key_dict[name]]['max_like'][i, :].min(),label='optimized')
@@ -678,7 +679,7 @@ def find_CI(profile_dict,cutoff=1.92,cell=0,normalize=True,infer_factor=3):
     for i in range(profile_dict['histogram'].shape[0]):
         temp_width=[]
         for index,j in enumerate(['ksyn','koff','kon']):
-            tmp=profile_dict[j]['max_like'][i,:].ravel()
+            tmp=profile_dict[j]['max_like'][i,:].ravel()/profile_dict['cell_number']
             tmp=tmp-tmp.min()
             tmp=tmp*cell
             min_index=tmp.argmin()
@@ -726,7 +727,7 @@ def find_CI(profile_dict,cutoff=1.92,cell=0,normalize=True,infer_factor=3):
             if upper_bound-lower_bound<0.001:
                 pass
             width=max(upper_bound-lower_bound,0.001)
-            temp_width.append([lower_bound,upper_bound,width,width/profile_dict['MLE'][i,index],width/(profile_dict[j]['parameter'][i,-1,index]-profile_dict[j]['parameter'][i,0,index])])
+            temp_width.append([lower_bound,upper_bound,width,width/profile_dict['MLE'][i,index],np.log10(max(upper_bound/lower_bound,1.001))/(np.log10(profile_dict[j]['parameter'][i,-1,index])-np.log10(profile_dict[j]['parameter'][i,0,index]))])
         width_array.append(temp_width)
     width_array=np.array(width_array)
     return width_array
