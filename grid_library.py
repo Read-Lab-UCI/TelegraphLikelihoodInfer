@@ -1,4 +1,4 @@
-from function import *
+from function3 import *
 #from pytorch_test import block_two_state_cme
 import os,shelve,sparse,argparse
 from tqdm import tqdm
@@ -9,28 +9,34 @@ from time import time
 import matplotlib.pyplot as plt
 from matplotlib import colors
 
-def generate_library(shape,percentage=False,sense=False,transition=False,path='one_gene_two_state_library_grid',ksyn_max=2.3):
+def generate_library(shape,percentage=False,sense=False,transition=False,path='one_gene_two_state_library_grid',ksyn_max=2.389,ksyn_min=-0.3,device='cpu'):#ksyn_max=250,ksyn_min=0.5
     print(path)
     f = shelve.open(path)
     keys = list(f.keys())
     f.close()
     if 'batch0' not in keys and 'downsample_1.0' not in keys:
         print(ksyn_max)
-        unbinding = np.linspace(-3, 3, shape[0])
-        binding = np.linspace(-3, 3,shape[1])
-        ksyn = np.linspace(-0.3, ksyn_max,shape[2])
+        unbinding = np.linspace(-3, 3, shape[1])
+        binding = np.linspace(-3, 3,shape[2])
+        ksyn = np.linspace(ksyn_min, ksyn_max,shape[0])
         parameter = np.zeros((shape[0] * shape[1] * shape[2], 5))
         parameter[:, 0] = 0
         parameter[:, -1] = 1
         parameter[:, 1] = np.repeat(ksyn, repeats=shape[1] * shape[2])
-        parameter[:, 2] = np.tile(np.repeat(unbinding, repeats=shape[0]), reps=shape[2])
+        parameter[:, 2] = np.tile(np.repeat(unbinding, repeats=shape[2]), reps=shape[0])
         parameter[:, 3] = np.tile(binding, reps=shape[0] * shape[1])
         parameter[:, 1:-1] = 10 ** parameter[:, 1:-1]
+        #parameter[:,2:-1]=10 ** parameter[:, 1:-1]
         batch = [0]
-        max_state_tx=int(10**(ksyn_max+0.4/ksyn_max))
+        #max_state_tx=int(10**(ksyn_max+0.4/ksyn_max))
+        max_state_tx=10**ksyn_max
+        max_state_tx=int(max_state_tx+5*max_state_tx**0.5)
+        #max_state_tx=max(50,ksyn_max+int(ksyn_max**0.5*3.5))
         print(max_state_tx)
         max_state_tx=int(np.ceil((max_state_tx-50)/40))*40+50
-        max_state = list(np.arange(50,max_state_tx)[::40])
+        max_state = list(np.arange(max(50,int(10**ksyn_min)),max_state_tx)[::40])
+        #max_state=list(np.arange(max(50,ksyn_min),max_state_tx)[::40])
+        print(max_state)
         for i in max_state:
             batch.append(np.argmax(parameter[batch[-1]:, 1] > i) + batch[-1])
         batch.append(parameter.shape[0])
@@ -41,16 +47,26 @@ def generate_library(shape,percentage=False,sense=False,transition=False,path='o
         batch_name = 'batch0'
         save_path = path
         error = []
+        """
+        pool=Pool(cpu_count()-1)
+        start=time()
+        with pool:
+            result=list(pool.imap(compute_cme_one_gene_two_state,parameter))
+        pool.close()
+        print('total time:',time()-start)
+        exit()
+        """
         for i in tqdm(range(1, len(batch))):
             start2 = time()
             test = block_two_state_cme(parameter[batch[i - 1]:batch[i]], save_path, percentage=percentage, sense=sense,
-                                       keep_transition=transition, batch=batch_id)
+                                       keep_transition=transition, batch=batch_id,device=device)
             # error.append(test.error)
             # test = block_four_state_cme(param_values[:70000], percentage=True, sense=True,keep_transition=False)
             batch_id = test.batch
             print('{} large system of size {} solved in {}s'.format(batch[i] - batch[i - 1], max_state[i - 1],
                                                                     time() - start2))
         print('total time:', time() - start)
+        exit()
     if 'downsample_1.0' not in keys:
         f = shelve.open(path)
         keys = list(f.keys())
@@ -58,21 +74,22 @@ def generate_library(shape,percentage=False,sense=False,transition=False,path='o
         for i in keys:
             num_parameter += f[i].n
         parameter = np.empty((num_parameter, 5))
-        distribution = sparse.zeros((1, max_state[-1]+10))
-        v0 = sparse.zeros((1, max_state[-1]+10))
-        va = sparse.zeros((1, max_state[-1]+10))
+        distribution = sparse.zeros((1, f[keys[-1]].distribution.shape[1]))
+        v0 = sparse.zeros((1,  f[keys[-1]].distribution.shape[1]))
+        va = sparse.zeros((1,  f[keys[-1]].distribution.shape[1]))
         error = np.zeros(num_parameter)
         if 'S' in f[keys[0]].__dict__:
-            S = np.zeros((5, num_parameter, max))
+            S = np.zeros((5, num_parameter,  f[keys[-1]].distribution.shape[1]))
+            S_single_value=np.zeros((num_parameter,f[keys[0]].S_single_value.shape[1]))
         start = 0
         for i in keys:
             end = start + f[i].n
-            temp = sparse.concatenate([f[i].v0, sparse.zeros((f[i].n, max_state[-1]+10 - f[i].v0.shape[1]))], axis=1)
+            temp = sparse.concatenate([sparse.asarray(f[i].v0.to_dense()), sparse.zeros((f[i].n,  f[keys[-1]].distribution.shape[1] - f[i].v0.shape[1]))], axis=1)
             v0 = sparse.concatenate([v0, temp], axis=0)
-            temp = sparse.concatenate([f[i].va, sparse.zeros((f[i].n, max_state[-1]+10 - f[i].va.shape[1]))], axis=1)
+            temp = sparse.concatenate([f[i].va, sparse.zeros((f[i].n,  f[keys[-1]].distribution.shape[1] - f[i].va.shape[1]))], axis=1)
             va = sparse.concatenate([va, temp], axis=0)
             error[start:end] = f[i].error
-            temp = sparse.concatenate([f[i].distribution, sparse.zeros((f[i].n, max_state[-1]+10 - f[i].distribution.shape[1]))],
+            temp = sparse.concatenate([sparse.asarray(f[i].distribution.to_dense()), sparse.zeros((f[i].n,  f[keys[-1]].distribution.shape[1] - f[i].distribution.shape[1]))],
                                       axis=1)
             distribution = sparse.concatenate([distribution, temp], axis=0)
             parameter[start:end, 0] = f[i].k_off
@@ -81,7 +98,8 @@ def generate_library(shape,percentage=False,sense=False,transition=False,path='o
             parameter[start:end, 3] = f[i].h
             parameter[start:end, 4] = f[i].kd
             try:
-                S[5, start:end, max_state[-1]+10] = f[i].S
+                S[:, start:end, :f[i].S.shape[-1]] = f[i].S.sum(axis=2)
+                S_single_value[start:end,:]=f[i].S_single_value
             except:
                 pass
             start = end
@@ -97,6 +115,7 @@ def generate_library(shape,percentage=False,sense=False,transition=False,path='o
         f['n'] = num_parameter
         try:
             f['S'] = S
+            f['S_single_value']=S_single_value
         except:
             pass
         for i in ['+', '0', '-']:
@@ -118,7 +137,8 @@ def generate_library(shape,percentage=False,sense=False,transition=False,path='o
 
 
 if __name__=='__main__':
-    #generate_library(shape=[60,60,60], path='one_gene_two_state_library_grid', ksyn_max=2.3)
+    generate_library(shape=(60,60,60),sense=True,path='library_with_sense_log',ksyn_max=2.3,device='cuda')
+    #generate_library(shape=[60,60,60], path='testing', ksyn_max=2.3)
     parser=argparse.ArgumentParser()
     parser.add_argument('--shape',help='shape of grid for generating library, default:[60 60 60]',type=int,nargs='*',metavar='N',default=[60,60,60])
     parser.add_argument('--sense',help='whether or not to compute sensitivity in the library,default is False',type=bool,default=False)
@@ -127,11 +147,14 @@ if __name__=='__main__':
     parser.add_argument('--percentage', help='whether to use of percentage gene on in CME model,default is False',
                         type=bool, nargs='?', default=False)
     parser.add_argument('--path',help='library path',type=str,nargs='?',default='one_gene_two_state_library_grid')
-    parser.add_argument('--mRNA',help='maximum MRNA value',type=int,default=298)
+    parser.add_argument('--mRNA',help='maximum MRNA value',type=int,default=270)
+    parser.add_argument('--ksyn_max',help='ksyn_maximum in log 10',type=float,default=2.3)
+    parser.add_argument('--device',help='run on cpu or cuda, default cpu',default='cpu')
     args=parser.parse_args()
-    ksyn_max=(np.log10(args.mRNA)+(np.log10(args.mRNA)**2-1.6)**0.5)/2
-    ksyn_max=max(ksyn_max,2.3)
-    generate_library(shape=args.shape,percentage=args.percentage,sense=args.sense,transition=args.transition,path=args.path,ksyn_max=ksyn_max)
+    #ksyn_max=(args.mRNA*8-7*(16*args.mRNA+49)**0.5+49)/8
+    #ksyn_max=(np.log10(args.mRNA)+(np.log10(args.mRNA)**2-1.6)**0.5)/2
+    ksyn_max=(max(args.ksyn_max,np.log10(0.5*(2*args.mRNA-5*(4*args.mRNA+25)**0.5+25))))
+    generate_library(shape=args.shape,percentage=args.percentage,sense=args.sense,transition=args.transition,path=args.path,ksyn_max=ksyn_max,ksyn_min=-0.3,device=args.device)
     """
     f = shelve.open('one_gene_two_state_library_grid')
     keys = list(f.keys())
