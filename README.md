@@ -73,4 +73,6 @@
  python wrapper.py --pexp library_name --self 1
  ```
 https://zenodo.org/badge/975005025.svg
+
+<a href="https://doi.org/10.5281/zenodo.16915449"><img src="https://zenodo.org/badge/975005025.svg" alt="DOI"></a>
  
